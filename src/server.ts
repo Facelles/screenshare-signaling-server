@@ -48,6 +48,7 @@ interface ClientToServerEvents {
 
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173';
 const PORT = Number(process.env.PORT ?? 3001);
+const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD ?? '';
 
 // ─── App Setup ───────────────────────────────────────────────────────────────
 
@@ -86,6 +87,21 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string,
     transports: ['websocket', 'polling'],
   },
 );
+
+// ─── Authentication Middleware ───────────────────────────────────────────────
+
+io.use((socket, next) => {
+  if (!ACCESS_PASSWORD) {
+    return next(); // If no password set on server, allow all
+  }
+  
+  const clientPassword = socket.handshake.auth.password;
+  if (clientPassword === ACCESS_PASSWORD) {
+    return next();
+  }
+  
+  return next(new Error('Unauthorized: Invalid password'));
+});
 
 io.on('connection', (socket) => {
   console.log(`[+] connected: ${socket.id}`);
