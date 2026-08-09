@@ -21,15 +21,17 @@ interface SocketData {
 
 // Socket.IO event maps — keeps emit/on fully typed without 'never'
 interface ServerToClientEvents {
-  room_created:  (payload: { roomId: string; token: string }) => void;
-  joined:        (payload: { roomId: string }) => void;
-  join_error:    (payload: { message: string }) => void;
-  viewer_joined: () => void;
-  viewer_left:   () => void;
-  host_left:     () => void;
-  offer:         (payload: { sdp: object }) => void;
-  answer:        (payload: { sdp: object }) => void;
-  ice_candidate: (payload: { candidate: object }) => void;
+  room_created:   (payload: { roomId: string; token: string }) => void;
+  joined:         (payload: { roomId: string }) => void;
+  join_error:     (payload: { message: string }) => void;
+  viewer_joined:  () => void;
+  viewer_left:    () => void;
+  host_left:      () => void;
+  offer:          (payload: { sdp: object }) => void;
+  answer:         (payload: { sdp: object }) => void;
+  viewer_offer:   (payload: { sdp: object }) => void;
+  host_answer:    (payload: { sdp: object }) => void;
+  ice_candidate:  (payload: { candidate: object }) => void;
 }
 
 interface ClientToServerEvents {
@@ -37,6 +39,8 @@ interface ClientToServerEvents {
   join_room:     (payload: { token: string }) => void;
   offer:         (payload: { sdp: object }) => void;
   answer:        (payload: { sdp: object }) => void;
+  viewer_offer:  (payload: { sdp: object }) => void;
+  host_answer:   (payload: { sdp: object }) => void;
   ice_candidate: (payload: { candidate: object }) => void;
 }
 
@@ -152,6 +156,30 @@ io.on('connection', (socket) => {
 
     io.to(room.hostSocketId).emit('answer', { sdp });
     console.log(`[sdp] answer → host in ${roomId}`);
+  });
+
+  // viewer_offer: Viewer mic renegotiation → Host
+  socket.on('viewer_offer', ({ sdp }) => {
+    const { roomId, role } = socket.data;
+    if (!roomId || role !== 'viewer') return;
+
+    const room = rooms.get(roomId);
+    if (!room?.hostSocketId) return;
+
+    io.to(room.hostSocketId).emit('viewer_offer', { sdp });
+    console.log(`[sdp] viewer_offer → host in ${roomId}`);
+  });
+
+  // host_answer: Host answer to viewer mic offer → Viewer
+  socket.on('host_answer', ({ sdp }) => {
+    const { roomId, role } = socket.data;
+    if (!roomId || role !== 'host') return;
+
+    const room = rooms.get(roomId);
+    if (!room?.viewerSocketId) return;
+
+    io.to(room.viewerSocketId).emit('host_answer', { sdp });
+    console.log(`[sdp] host_answer → viewer in ${roomId}`);
   });
 
   socket.on('ice_candidate', ({ candidate }) => {
