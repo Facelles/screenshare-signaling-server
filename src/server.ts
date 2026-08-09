@@ -37,6 +37,7 @@ interface ServerToClientEvents {
 interface ClientToServerEvents {
   create_room:   () => void;
   join_room:     (payload: { token: string }) => void;
+  rejoin_room_as_host: (payload: { token: string }) => void;
   offer:         (payload: { sdp: object }) => void;
   answer:        (payload: { sdp: object }) => void;
   viewer_offer:  (payload: { sdp: object }) => void;
@@ -119,6 +120,27 @@ io.on('connection', (socket) => {
 
     console.log(`[room] created: ${roomId}`);
     socket.emit('room_created', { roomId, token });
+  });
+
+  socket.on('rejoin_room_as_host', ({ token }) => {
+    const found = getRoomByToken(token);
+    if (!found) {
+      // Room was destroyed (e.g. server restart). Host should create a new one.
+      socket.emit('join_error', { message: 'Кімната не знайдена.' });
+      return;
+    }
+    const { roomId, room } = found;
+    room.hostSocketId = socket.id;
+    void socket.join(roomId);
+    socket.data.roomId = roomId;
+    socket.data.role = 'host';
+    socket.emit('room_created', { roomId, token });
+    console.log(`[room] host rejoined: ${roomId}`);
+    
+    // Notify host if viewer is already in the room
+    if (room.viewerSocketId) {
+      socket.emit('viewer_joined');
+    }
   });
 
   // ── VIEWER: Join via one-time token ────────────────────────────────────
