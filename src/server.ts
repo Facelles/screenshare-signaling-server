@@ -133,8 +133,14 @@ io.on('connection', (socket) => {
     const { roomId, room } = found;
 
     if (room.viewerSocketId) {
-      socket.emit('join_error', { message: 'Кімната заповнена (максимум 2 учасники).' });
-      return;
+      // Viewer slot is taken, but maybe they refreshed the page and the old socket is hung.
+      // Since they have the secure token, we kick the old socket and let them take over.
+      const oldSocket = io.sockets.sockets.get(room.viewerSocketId);
+      if (oldSocket) {
+        oldSocket.emit('join_error', { message: 'Ви підключилися з іншої вкладки.' });
+        oldSocket.disconnect(true);
+      }
+      console.log(`[room] viewer slot overtaken in ${roomId}`);
     }
 
     room.viewerSocketId = socket.id;
