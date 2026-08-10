@@ -63,6 +63,10 @@ app.use(express.json());
 
 const rooms = new Map<string, Room>();
 
+// Grace period timers: roomId → NodeJS.Timeout
+const hostGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const viewerGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 const generateToken = (): string =>
   crypto.randomBytes(24).toString('base64url');
 
@@ -130,6 +134,15 @@ io.on('connection', (socket) => {
       return;
     }
     const { roomId, room } = found;
+    
+    // Cancel the grace timer so the room isn’t destroyed!
+    const existingTimer = hostGraceTimers.get(roomId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      hostGraceTimers.delete(roomId);
+      console.log(`[room] host reconnected, grace timer cancelled for ${roomId}`);
+    }
+    
     room.hostSocketId = socket.id;
     void socket.join(roomId);
     socket.data.roomId = roomId;
@@ -163,6 +176,14 @@ io.on('connection', (socket) => {
         oldSocket.disconnect(true);
       }
       console.log(`[room] viewer slot overtaken in ${roomId}`);
+    }
+
+    // Cancel viewer grace timer if they reconnect quickly
+    const existingViewerTimer = viewerGraceTimers.get(roomId);
+    if (existingViewerTimer) {
+      clearTimeout(existingViewerTimer);
+      viewerGraceTimers.delete(roomId);
+      console.log(`[room] viewer reconnected, grace timer cancelled for ${roomId}`);
     }
 
     room.viewerSocketId = socket.id;
@@ -247,16 +268,35 @@ io.on('connection', (socket) => {
     if (!room) return;
 
     if (role === 'host') {
-      if (room.viewerSocketId) {
-        io.to(room.viewerSocketId).emit('host_left');
-      }
-      rooms.delete(roomId);
-      console.log(`[room] destroyed: ${roomId}`);
+      // Grace period: wait 15s before destroying the room.
+      // If the host reconnects in time, the timer is cancelled.
+      console.log(`[room] host disconnected, starting 15s grace timer for room ${roomId}`);
+      const timer = setTimeout(() => {
+        const currentRoom = rooms.get(roomId);
+        if (currentRoom) {
+          if (currentRoom.viewerSocketId) {
+            io.to(currentRoom.viewerSocketId).emit('host_left');
+          }
+          rooms.delete(roomId);
+          hostGraceTimers.delete(roomId);
+          console.log(`[room] destroyed after grace period: ${roomId}`);
+        }
+      }, 15_000);
+      hostGraceTimers.set(roomId, timer);
+
     } else if (role === 'viewer') {
-      room.viewerSocketId = null;
-      const hostSocket = io.sockets.sockets.get(room.hostSocketId);
-      hostSocket?.emit('viewer_left');
-      console.log(`[room] viewer slot freed: ${roomId}`);
+      // Small grace period for viewer disconnect (e.g. page refresh)
+      const timer = setTimeout(() => {
+        const currentRoom = rooms.get(roomId);
+        if (currentRoom && currentRoom.viewerSocketId === socket.id) {
+          currentRoom.viewerSocketId = null;
+          const hostSocket = io.sockets.sockets.get(currentRoom.hostSocketId);
+          hostSocket?.emit('viewer_left');
+          console.log(`[room] viewer slot freed after grace: ${roomId}`);
+        }
+        viewerGraceTimers.delete(roomId);
+      }, 3_000);
+      viewerGraceTimers.set(roomId, timer);
     }
   });
 });
