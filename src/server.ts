@@ -167,8 +167,8 @@ io.on('connection', (socket) => {
 
     const { roomId, room } = found;
 
-    if (room.viewerSocketId) {
-      // Viewer slot is taken, but maybe they refreshed the page and the old socket is hung.
+    if (room.viewerSocketId && room.viewerSocketId !== socket.id) {
+      // Viewer slot is taken by a DIFFERENT socket.
       // Since they have the secure token, we kick the old socket and let them take over.
       const oldSocket = io.sockets.sockets.get(room.viewerSocketId);
       if (oldSocket) {
