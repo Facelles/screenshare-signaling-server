@@ -30,6 +30,7 @@ interface ServerToClientEvents {
   viewer_joined:     () => void;
   viewer_left:       () => void;
   host_left:         () => void;
+  room_closed:       () => void;
   offer:             (payload: { sdp: object }) => void;
   answer:            (payload: { sdp: object }) => void;
   viewer_offer:      (payload: { sdp: object }) => void;
@@ -41,6 +42,7 @@ interface ClientToServerEvents {
   create_room:         () => void;
   join_room:           (payload: { token: string }) => void;
   rejoin_room_as_host: (payload: { token: string }) => void;
+  close_room:          () => void;
   offer:               (payload: { sdp: object }) => void;
   answer:              (payload: { sdp: object }) => void;
   viewer_offer:        (payload: { sdp: object }) => void;
@@ -150,6 +152,23 @@ const rooms = new Map<string, Room>();
 // Grace-period timers (not persisted – a restart gives a fresh grace window)
 const hostGraceTimers   = new Map<string, ReturnType<typeof setTimeout>>();
 const viewerGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const viewerWaitTimers  = new Map<string, ReturnType<typeof setTimeout>>(); // timeout if host never joins
+
+// Rate limiting
+const rateLimits = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const record = rateLimits.get(ip);
+  if (!record || now > record.resetAt) {
+    rateLimits.set(ip, { count: 1, resetAt: now + 60_000 }); // 1 min window
+    return true;
+  }
+  if (record.count >= 10) { // Max 10 rooms per minute per IP
+    return false;
+  }
+  record.count++;
+  return true;
+}
 
 // In-memory TTL timers (used when Redis is unavailable)
 const memoryTtlTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -257,6 +276,12 @@ io.on('connection', (socket) => {
 
   // ── HOST: Create a new room ───────────────────────────────────────────────
   socket.on('create_room', async () => {
+    const ip = socket.handshake.address;
+    if (!checkRateLimit(ip)) {
+      socket.emit('join_error', { message: 'Забагато запитів. Спробуйте пізніше.' });
+      return;
+    }
+
     const roomId = uuidv4().slice(0, 8);
     const token  = generateToken();
 
@@ -271,8 +296,23 @@ io.on('connection', (socket) => {
     socket.data.roomId = roomId;
     socket.data.role   = 'host';
 
-    console.log(`[room] created: ${roomId}`);
+    console.log(`[room] created: ${roomId} by ${ip}`);
     socket.emit('room_created', { roomId, token });
+  });
+
+  // ── HOST: Close room explicitly ───────────────────────────────────────────
+  socket.on('close_room', async () => {
+    const { roomId, role } = socket.data;
+    if (!roomId || role !== 'host') return;
+    const room = rooms.get(roomId);
+    if (room) {
+      if (room.viewerSocketId) {
+        io.to(room.viewerSocketId).emit('room_closed');
+      }
+      rooms.delete(roomId);
+      await deleteRoom(roomId, room.token);
+      console.log(`[room] explicitly closed by host: ${roomId}`);
+    }
   });
 
   // ── HOST: Rejoin after reconnect ──────────────────────────────────────────
@@ -310,6 +350,11 @@ io.on('connection', (socket) => {
     // Let host know a viewer is already waiting
     if (room.viewerSocketId) {
       socket.emit('viewer_joined');
+      const waitTimer = viewerWaitTimers.get(roomId);
+      if (waitTimer) {
+        clearTimeout(waitTimer);
+        viewerWaitTimers.delete(roomId);
+      }
     }
 
     // ── FIX: Viewer mic offer was buffered while host was away ─────────────
@@ -365,7 +410,20 @@ io.on('connection', (socket) => {
 
     // Notify host (only if host socket is currently alive)
     const hostSocket = room.hostSocketId ? io.sockets.sockets.get(room.hostSocketId) : null;
-    hostSocket?.emit('viewer_joined');
+    if (hostSocket) {
+      hostSocket.emit('viewer_joined');
+    } else {
+      // Host is not here, start a 10 min wait timer
+      const timer = setTimeout(() => {
+        const currentRoom = rooms.get(roomId);
+        if (currentRoom && currentRoom.viewerSocketId === socket.id) {
+          socket.emit('join_error', { message: 'Хост не підключився (таймаут 10 хв).' });
+          socket.disconnect(true);
+        }
+        viewerWaitTimers.delete(roomId);
+      }, 10 * 60 * 1000);
+      viewerWaitTimers.set(roomId, timer);
+    }
 
     socket.emit('joined', { roomId });
   });
