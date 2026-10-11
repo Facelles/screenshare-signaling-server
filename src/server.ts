@@ -104,19 +104,26 @@ interface PersistedRoom {
 
 async function persistRoom(roomId: string, data: PersistedRoom): Promise<void> {
   if (!redis) return;
-  // @upstash/redis: set with ex (seconds) option
+  // @upstash/redis automatically serializes objects and supports { ex: seconds }
   await Promise.all([
-    redis.set(`room:${roomId}`, JSON.stringify(data), { ex: ROOM_TTL_SEC }),
-    redis.set(`token:${data.token}`, roomId,           { ex: ROOM_TTL_SEC }),
+    redis.set(`room:${roomId}`, data,        { ex: ROOM_TTL_SEC }),
+    redis.set(`token:${data.token}`, roomId, { ex: ROOM_TTL_SEC }),
   ]);
 }
 
 async function loadRoom(roomId: string): Promise<PersistedRoom | null> {
   if (!redis) return null;
-  // @upstash/redis returns already-parsed value when stored as string
-  const raw = await redis.get<string>(`room:${roomId}`);
+  // @upstash/redis automatically deserializes JSON objects upon get()
+  const raw = await redis.get<PersistedRoom | string>(`room:${roomId}`);
   if (!raw) return null;
-  return JSON.parse(raw) as PersistedRoom;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) as PersistedRoom;
+    } catch {
+      return null;
+    }
+  }
+  return raw as PersistedRoom;
 }
 
 async function roomIdByToken(token: string): Promise<string | null> {
