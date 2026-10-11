@@ -163,6 +163,17 @@ const viewerWaitTimers  = new Map<string, ReturnType<typeof setTimeout>>(); // t
 
 // Rate limiting
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
+function getSocketIp(socket: { handshake: { address: string; headers: Record<string, unknown> } }): string {
+  const forwarded = socket.handshake.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0) {
+    return String(forwarded[0]).trim();
+  }
+  return socket.handshake.address;
+}
+
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
   const record = rateLimits.get(ip);
@@ -283,7 +294,7 @@ io.on('connection', (socket) => {
 
   // ── HOST: Create a new room ───────────────────────────────────────────────
   socket.on('create_room', async () => {
-    const ip = socket.handshake.address;
+    const ip = getSocketIp(socket);
     if (!checkRateLimit(ip)) {
       socket.emit('join_error', { message: 'Забагато запитів. Спробуйте пізніше.' });
       return;
